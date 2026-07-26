@@ -13,6 +13,8 @@ jobs:
   systemless:
     runs-on: macos-26
     permissions:
+      actions: write
+      checks: read
       contents: write
       pull-requests: write
     steps:
@@ -25,6 +27,7 @@ jobs:
         uses: Homebrew/actions/git-user-config@18fcb8e3e06b4247c676c506750dc95ea7226479 # 2026.07.13.1
 
       - name: Check for a new systemless release
+        id: release
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -43,10 +46,101 @@ jobs:
             exit 0
           fi
 
-          brew bump-formula-pr \
-            --no-browse \
-            --no-fork \
-            --online \
-            --strict \
-            --version="$latest" \
-            benletchford/tap/systemless
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Open or resume the formula update
+        id: bump
+        if: steps.release.outputs.latest != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST: ${{ steps.release.outputs.latest }}
+        run: |
+          pr_number="$(
+            gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --search "systemless $LATEST in:title" \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+
+          if [[ -z "$pr_number" ]]
+          then
+            bump_output="$(
+              brew bump-formula-pr \
+                --no-browse \
+                --no-fork \
+                --online \
+                --strict \
+                --version="$LATEST" \
+                benletchford/tap/systemless 2>&1
+            )"
+            echo "$bump_output"
+
+            pr_number="$(
+              echo "$bump_output" \
+                | sed -nE 's#.*github\.com/[^/]+/[^/]+/pull/([0-9]+).*#\1#p' \
+                | tail -1
+            )"
+          fi
+
+          if [[ -z "$pr_number" ]]
+          then
+            echo "Could not determine the formula update pull request." >&2
+            exit 1
+          fi
+
+          head_branch="$(
+            gh pr view "$pr_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json headRefName \
+              --jq '.headRefName'
+          )"
+          head_sha="$(
+            gh pr view "$pr_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json headRefOid \
+              --jq '.headRefOid'
+          )"
+
+          echo "pull_request=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_branch=$head_branch" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test the update
+        if: steps.bump.outputs.pull_request != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ steps.bump.outputs.head_branch }}
+        run: |
+          run_url="$(
+            gh workflow run tests.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref "$HEAD_BRANCH"
+          )"
+          run_id="${run_url##*/}"
+          gh run watch "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --exit-status \
+            --interval 15
+
+      - name: Publish the update
+        if: steps.bump.outputs.pull_request != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.bump.outputs.head_sha }}
+          PULL_REQUEST: ${{ steps.bump.outputs.pull_request }}
+        run: |
+          run_url="$(
+            gh workflow run publish.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              --field "pull_request=$PULL_REQUEST" \
+              --field "head_sha=$HEAD_SHA"
+          )"
+          run_id="${run_url##*/}"
+          gh run watch "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --exit-status \
+            --interval 15
