@@ -104,9 +104,11 @@ jobs:
               --jq '.headRefOid'
           )"
 
-          echo "pull_request=$pr_number" >> "$GITHUB_OUTPUT"
-          echo "head_branch=$head_branch" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "pull_request=$pr_number"
+            echo "head_branch=$head_branch"
+            echo "head_sha=$head_sha"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and test the update
         if: steps.bump.outputs.pull_request != ''
