@@ -1,18 +1,32 @@
-# Benletchford Tap
+# Ben Letchford's Homebrew Tap
 
-## How do I install these formulae?
+## Systemless
 
-`brew install benletchford/tap/<formula>`
+[Systemless](https://systemless.org/) is a high-level runtime for classic 68k
+Macintosh applications and games.
 
-Or `brew tap benletchford/tap` and then `brew install <formula>`.
+Install it directly:
 
-Or, in a `brew bundle` `Brewfile`:
+```sh
+brew install benletchford/tap/systemless
+```
+
+Or add the tap first:
+
+```sh
+brew tap benletchford/tap
+brew install systemless
+```
+
+In a `Brewfile`:
 
 ```ruby
 tap "benletchford/tap"
-brew "<formula>"
+brew "systemless"
 ```
 
-## Documentation
+Run a legally obtained classic Macintosh application archive with:
 
-`brew help`, `man brew` or check [Homebrew's documentation](https://docs.brew.sh).
+```sh
+systemless path/to/app-or-game.sit
+```
