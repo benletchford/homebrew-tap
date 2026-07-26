@@ -29,15 +29,43 @@ jobs:
 
       - name: Pull bottles
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ inputs.head_sha }}
           PULL_REQUEST: ${{ inputs.pull_request }}
         run: |
+          pr_pull_args=(
+            --debug
+            --tap="$GITHUB_REPOSITORY"
+          )
+
           if [[ -n "$HEAD_SHA" ]]
           then
-            brew pr-pull --debug --tap="$GITHUB_REPOSITORY" --head-sha="$HEAD_SHA" "$PULL_REQUEST"
+            pr_pull_args+=(--head-sha="$HEAD_SHA")
+          fi
+
+          pr_state="$(
+            gh pr view "$PULL_REQUEST" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json state \
+              --jq '.state'
+          )"
+
+          if [[ "$pr_state" == "MERGED" ]]
+          then
+            base_sha="$(
+              gh pr view "$PULL_REQUEST" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json baseRefOid \
+                --jq '.baseRefOid'
+            )"
+            GITHUB_SHA="$base_sha" brew pr-pull \
+              --no-cherry-pick \
+              --clean \
+              "${pr_pull_args[@]}" \
+              "$PULL_REQUEST"
           else
-            brew pr-pull --debug --tap="$GITHUB_REPOSITORY" "$PULL_REQUEST"
+            brew pr-pull "${pr_pull_args[@]}" "$PULL_REQUEST"
           fi
 
       - name: Push commits
