@@ -17,14 +17,33 @@ class Systemless < Formula
     sha256 cellar: :any_skip_relocation, arm64_tahoe: "f4ee2a4fb21f0206c1a8402de8795e3148b4fe820ebbad50e8487483da432cbe"
   end
 
-  depends_on "rust" => :build
-
   on_linux do
     depends_on "pkgconf" => :build
+    depends_on "rust" => :build
     depends_on "alsa-lib"
   end
 
+  on_arm do
+    depends_on "rust" => :build
+  end
+
+  resource "rust-toolchain" do
+    on_intel do
+      url "https://static.rust-lang.org/dist/2026-07-16/rust-1.97.1-x86_64-apple-darwin.tar.xz"
+      sha256 "891c32ea77b750dccc7fb0ea98e3feb9db3d29fe0cfea5907d002f270c59cf58"
+    end
+  end
+
   def install
+    if OS.mac? && Hardware::CPU.intel?
+      resource("rust-toolchain").stage do
+        system "./install.sh", "--prefix=#{buildpath}/rust-toolchain",
+               "--components=rustc,rust-std-x86_64-apple-darwin,cargo",
+               "--disable-ldconfig"
+      end
+      ENV.prepend_path "PATH", buildpath/"rust-toolchain/bin"
+    end
+
     system "cargo", "install", *std_cargo_args, "--bin", "systemless"
   end
 
