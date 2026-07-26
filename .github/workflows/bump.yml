@@ -91,6 +91,19 @@ jobs:
             exit 1
           fi
 
+          is_draft="$(
+            gh pr view "$pr_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isDraft \
+              --jq '.isDraft'
+          )"
+          if [[ "$is_draft" != "true" ]]
+          then
+            gh pr ready "$pr_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --undo
+          fi
+
           head_branch="$(
             gh pr view "$pr_number" \
               --repo "$GITHUB_REPOSITORY" \
@@ -146,3 +159,33 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --exit-status \
             --interval 15
+
+      - name: Close the published update
+        if: steps.bump.outputs.pull_request != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ steps.bump.outputs.head_branch }}
+          PULL_REQUEST: ${{ steps.bump.outputs.pull_request }}
+        run: |
+          pr_state="$(
+            gh pr view "$PULL_REQUEST" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json state \
+              --jq '.state'
+          )"
+
+          if [[ "$pr_state" == "OPEN" ]]
+          then
+            gh pr close "$PULL_REQUEST" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+
+          if gh api \
+            --silent \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/$HEAD_BRANCH"
+          then
+            gh api \
+              --method DELETE \
+              --silent \
+              "repos/$GITHUB_REPOSITORY/git/refs/heads/$HEAD_BRANCH"
+          fi
