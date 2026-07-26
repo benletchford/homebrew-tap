@@ -11,6 +11,12 @@ class Systemless < Formula
     strategy :github_latest
   end
 
+  bottle do
+    root_url "https://github.com/benletchford/homebrew-tap/releases/download/systemless-0.4.2"
+    rebuild 1
+    sha256 cellar: :any_skip_relocation, arm64_tahoe: "f4ee2a4fb21f0206c1a8402de8795e3148b4fe820ebbad50e8487483da432cbe"
+  end
+
   depends_on "rust" => :build
 
   on_linux do
