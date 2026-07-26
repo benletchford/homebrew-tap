@@ -24,5 +24,7 @@ class Systemless < Formula
 
   test do
     assert_match "Usage:", shell_output("#{bin}/systemless 2>&1", 1)
+    assert_match "Error: Game file not found",
+                 shell_output("#{bin}/systemless #{testpath}/missing.sit 2>&1", 1)
   end
 end
