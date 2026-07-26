@@ -12,10 +12,10 @@ class Systemless < Formula
   end
 
   bottle do
-    root_url "https://github.com/benletchford/homebrew-tap/releases/download/systemless-0.5.0"
-    sha256 cellar: :any_skip_relocation, arm64_tahoe:  "dce418e411e2f5c2e71e5bb65a4ee6da4889a85cd63ba9cb64976e8ef2cb3088"
-    sha256 cellar: :any_skip_relocation, sequoia:      "cc4e775c7fe20bc90117e6bfa9a09a0538c5201b81f1247a1e7d17fc68a58bda"
-    sha256 cellar: :any,                 x86_64_linux: "df305d225f4f4cc08d0ec7ca4aa6e56a2b06b75eb03ae9e669a69f751f086bcc"
+    root_url "https://github.com/benletchford/homebrew-tap/releases/download/systemless-0.6.0"
+    sha256 cellar: :any_skip_relocation, arm64_tahoe:  "47adc45529f8296a6534077f6c0476b9347c05190a12a318a6872d0593195a4d"
+    sha256 cellar: :any_skip_relocation, sequoia:      "f8650a9d596f064609b710365aa48c71676f1d97e29b0b0ee691d89ed425fe1f"
+    sha256 cellar: :any,                 x86_64_linux: "7993d49af449806f4dcb1afe6d4fa28a6701e8c8161da36f4ea14faef44b59b8"
   end
 
   on_linux do
