@@ -377,24 +377,36 @@ jobs:
           echo "::endgroup::"
 
       - name: Verify the bottles are downloadable
-        env:
-          ROOT_URL: ${{ needs.plan.outputs.root_url }}
-          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
 
+          # Read the URLs back out of the formula that is about to be pushed
+          # rather than reconstructing them. Bottle filenames carry a rebuild
+          # suffix when the version being bottled already sits on main, so the
+          # formula is the only trustworthy source for what users will fetch.
+          bottles="$(
+            brew info --json=v2 --formula "$FORMULA" \
+              | jq -r '.formulae[0].bottle.stable.files // {} | to_entries[] | "\(.key) \(.value.url)"'
+          )"
+
           for expected in $BOTTLE_TAGS
           do
-            url="$ROOT_URL/systemless-$VERSION.$expected.bottle.tar.gz"
-            status="$(curl -sIL -o /dev/null -w '%{http_code}' "$url")"
+            url="$(awk -v tag="$expected" '$1 == tag {print $2}' <<<"$bottles")"
 
+            if [[ -z "$url" ]]
+            then
+              echo "The formula advertises no $expected bottle." >&2
+              exit 1
+            fi
+
+            status="$(curl -sIL -o /dev/null -w '%{http_code}' "$url")"
             if [[ "$status" != "200" ]]
             then
               echo "Published bottle is not downloadable (HTTP $status): $url" >&2
               exit 1
             fi
 
-            echo "$expected bottle is downloadable."
+            echo "The $expected bottle is downloadable: $url"
           done
 
       - name: Commit the release
