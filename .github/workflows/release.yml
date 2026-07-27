@@ -44,6 +44,7 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     outputs:
@@ -218,6 +219,7 @@ jobs:
               options: --privileged
     runs-on: ${{ matrix.os }}
     container: ${{ fromJSON(toJSON(matrix.container)) }} # zizmor: ignore[unpinned-images]
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -301,6 +303,7 @@ jobs:
   publish:
     needs: [plan, bottle]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -339,6 +342,44 @@ jobs:
 
           cp "$RUNNER_TEMP/prepared-formula/${FORMULA_FILE##*/}" \
             "$tap_dir/$FORMULA_FILE"
+
+      # Uploading an asset that already exists is an error, so a retry after a
+      # part-finished release would wedge permanently without this.
+      - name: Clear superseded release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROOT_URL: ${{ needs.plan.outputs.root_url }}
+        run: |
+          set -euo pipefail
+
+          tag="${ROOT_URL##*/}"
+
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
+          then
+            echo "No $tag release yet."
+            exit 0
+          fi
+
+          published="$(
+            gh release view "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq '.assets[].name'
+          )"
+
+          # Take the remote names from the bottle metadata rather than deriving
+          # them, because the local files spell the version differently.
+          jq -r '.[].bottle.tags[].filename' "$RUNNER_TEMP"/bottles/*.bottle.json \
+            | while read -r name
+          do
+            if grep -qxF "$name" <<<"$published"
+            then
+              echo "Removing superseded $name."
+              gh release delete-asset "$tag" "$name" \
+                --repo "$GITHUB_REPOSITORY" \
+                --yes
+            fi
+          done
 
       - name: Merge the bottle block and upload the bottles
         env:
@@ -430,11 +471,16 @@ jobs:
               --message "Bumps the formula and its bottles in a single commit."
           fi
 
+      # No `token` here on purpose: `setup-homebrew` already authenticated this
+      # checkout for the job, and passing one re-writes the auth header out from
+      # under it, which leaves every push and fetch failing. `tries` is bounded
+      # because the action backs off exponentially and would otherwise retry for
+      # hours instead of failing and alerting.
       - name: Push the release
         uses: Homebrew/actions/git-try-push@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           branch: main
+          tries: 3
 
   verify:
     needs: [plan, publish]
@@ -449,6 +495,7 @@ jobs:
               options: --privileged
     runs-on: ${{ matrix.os }}
     container: ${{ fromJSON(toJSON(matrix.container)) }} # zizmor: ignore[unpinned-images]
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -495,6 +542,7 @@ jobs:
     needs: [plan, bottle, publish, verify]
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       issues: write
     steps:
