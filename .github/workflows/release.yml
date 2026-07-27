@@ -534,9 +534,20 @@ jobs:
             exit 1
           fi
 
-          brew test "$FORMULA"
+          # Run the poured binary directly rather than via `brew test`, which is
+          # a developer command that insists on the formula's test dependencies
+          # being present and so fails in a bare container. The formula's own
+          # test already ran on this platform during bottling; what is worth
+          # checking here is that the published artifact executes.
+          reported="$("$(brew --prefix "$FORMULA")/bin/systemless" --version)"
 
-          echo "Poured and tested systemless $VERSION."
+          if [[ "$reported" != *"$VERSION"* ]]
+          then
+            echo "The poured binary reports '$reported', not $VERSION." >&2
+            exit 1
+          fi
+
+          echo "Poured and ran systemless $VERSION: $reported"
 
   alert:
     needs: [plan, bottle, publish, verify]
