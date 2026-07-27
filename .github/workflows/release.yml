@@ -231,13 +231,17 @@ jobs:
           key: ${{ matrix.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
           restore-keys: ${{ matrix.os }}-rubygems-
 
+      # Downloaded outside the workspace: on macOS the workspace *is* the tap,
+      # and a stray .rb under it would be read as another formula.
       - name: Download the prepared formula
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: formula
-          path: prepared-formula
+          path: ${{ runner.temp }}/prepared-formula
 
       - name: Stage the prepared formula
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -246,13 +250,21 @@ jobs:
           git -C "$tap_dir" fetch --force origin main
           git -C "$tap_dir" checkout --force -B main origin/main
 
-          cp "prepared-formula/${FORMULA_FILE##*/}" "$tap_dir/$FORMULA_FILE"
+          cp "$RUNNER_TEMP/prepared-formula/${FORMULA_FILE##*/}" \
+            "$tap_dir/$FORMULA_FILE"
 
-          # `brew test-bot` reads the formula through git, so the staged bump
-          # has to be committed locally. It is never pushed from this job.
+          # `brew test-bot` reads the formula through git, so a staged bump has
+          # to be committed locally. It is never pushed from this job. When only
+          # the bottles are missing the formula is already correct and there is
+          # nothing to commit, which is not an error.
           git -C "$tap_dir" add "$FORMULA_FILE"
-          git -C "$tap_dir" commit \
-            --message "systemless ${{ needs.plan.outputs.version }}"
+
+          if git -C "$tap_dir" diff --cached --quiet
+          then
+            echo "The formula already matches the release; bottling it as-is."
+          else
+            git -C "$tap_dir" commit --message "systemless $VERSION"
+          fi
 
       - run: brew test-bot --only-cleanup-before
 
@@ -294,18 +306,19 @@ jobs:
       - name: Set up git
         uses: Homebrew/actions/git-user-config@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
 
+      # Downloaded outside the workspace, which is the tap itself here.
       - name: Download the prepared formula
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: formula
-          path: prepared-formula
+          path: ${{ runner.temp }}/prepared-formula
 
       - name: Download the bottles
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: bottle-*
           merge-multiple: true
-          path: bottles
+          path: ${{ runner.temp }}/bottles
 
       - name: Stage the prepared formula
         run: |
@@ -318,7 +331,8 @@ jobs:
           git -C "$tap_dir" fetch --force origin main
           git -C "$tap_dir" checkout --force -B main origin/main
 
-          cp "prepared-formula/${FORMULA_FILE##*/}" "$tap_dir/$FORMULA_FILE"
+          cp "$RUNNER_TEMP/prepared-formula/${FORMULA_FILE##*/}" \
+            "$tap_dir/$FORMULA_FILE"
 
       - name: Merge the bottle block and upload the bottles
         env:
@@ -335,7 +349,7 @@ jobs:
           # which is the mismatch that broke 0.7.0. The formula edit stays local
           # until the push below, so the bottles are always downloadable before
           # main refers to them.
-          cd bottles
+          cd "$RUNNER_TEMP/bottles"
           brew pr-upload \
             --verbose \
             --no-commit \
@@ -386,9 +400,17 @@ jobs:
           tap_dir="$(brew --repo "${FORMULA%/*}")"
 
           git -C "$tap_dir" add "$FORMULA_FILE"
-          git -C "$tap_dir" commit \
-            --message "systemless $VERSION" \
-            --message "Bumps the formula and its bottles in a single commit."
+
+          # A re-run that reproduces the identical formula has nothing to
+          # commit, and the push below is then a no-op rather than a failure.
+          if git -C "$tap_dir" diff --cached --quiet
+          then
+            echo "main already carries this release."
+          else
+            git -C "$tap_dir" commit \
+              --message "systemless $VERSION" \
+              --message "Bumps the formula and its bottles in a single commit."
+          fi
 
       - name: Push the release
         uses: Homebrew/actions/git-try-push@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
