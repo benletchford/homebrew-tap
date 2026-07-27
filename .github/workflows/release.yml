@@ -42,7 +42,6 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.plan.outputs.version }}
-      tag: ${{ steps.plan.outputs.tag }}
       root_url: ${{ steps.plan.outputs.root_url }}
       release: ${{ steps.plan.outputs.release }}
     steps:
@@ -77,12 +76,12 @@ jobs:
             exit 1
           fi
 
-          tag="systemless-$version"
-          root_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${tag}"
+          # `brew pr-upload` derives the release tag from the last path segment
+          # of this URL, so the two cannot drift apart.
+          root_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/systemless-${version}"
 
           {
             echo "version=$version"
-            echo "tag=$tag"
             echo "root_url=$root_url"
           } >> "$GITHUB_OUTPUT"
 
@@ -303,26 +302,39 @@ jobs:
           merge-multiple: true
           path: bottles
 
-      - name: Write the bottle block
+      - name: Stage the prepared formula
+        run: |
+          set -euo pipefail
+
+          tap_dir="$(brew --repo "${FORMULA%/*}")"
+
+          # Build the release commit on top of the published tap, so a run
+          # dispatched from a topic branch cannot push that branch to main.
+          git -C "$tap_dir" fetch --force origin main
+          git -C "$tap_dir" checkout --force -B main origin/main
+
+          cp "prepared-formula/${FORMULA_FILE##*/}" "$tap_dir/$FORMULA_FILE"
+
+      - name: Merge the bottle block and upload the bottles
         env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ROOT_URL: ${{ needs.plan.outputs.root_url }}
         run: |
           set -euo pipefail
 
           tap_dir="$(brew --repo "${FORMULA%/*}")"
 
-          git -C "$tap_dir" fetch --force origin main
-          git -C "$tap_dir" checkout --force -B main origin/main
-
-          cp "prepared-formula/${FORMULA_FILE##*/}" "$tap_dir/$FORMULA_FILE"
-
+          # `pr-upload` writes the bottle block into the formula and uploads the
+          # bottles to the release named by the root URL. It also refuses to
+          # continue when the bottles and the formula disagree on the version,
+          # which is the mismatch that broke 0.7.0. The formula edit stays local
+          # until the push below, so the bottles are always downloadable before
+          # main refers to them.
           cd bottles
-          brew bottle \
-            --merge \
-            --write \
+          brew pr-upload \
+            --verbose \
             --no-commit \
-            --root-url="$ROOT_URL" \
-            ./*.json
+            --root-url="$ROOT_URL"
 
           # Refuse to publish a formula that does not cover every platform the
           # matrix builds for, rather than shipping a partial bottle block.
@@ -338,30 +350,6 @@ jobs:
           echo "::group::Formula to publish"
           cat "$tap_dir/$FORMULA_FILE"
           echo "::endgroup::"
-
-      - name: Publish the bottles
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.plan.outputs.tag }}
-          VERSION: ${{ needs.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          # The bottles go up before the formula that references them, so the
-          # tap never advertises a download that does not exist yet.
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
-          then
-            gh release upload "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber \
-              bottles/*.bottle.tar.gz
-          else
-            gh release create "$TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "$TAG" \
-              --notes "Homebrew bottles for systemless $VERSION." \
-              bottles/*.bottle.tar.gz
-          fi
 
       - name: Verify the bottles are downloadable
         env:
