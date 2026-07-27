@@ -28,6 +28,12 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+# The homebrew/brew container runs `run:` steps under dash by default, which
+# has no `pipefail`. Every script here relies on it, so pin the shell.
+defaults:
+  run:
+    shell: bash
+
 env:
   FORMULA: benletchford/tap/systemless
   FORMULA_FILE: Formula/systemless.rb

@@ -10,6 +10,12 @@ on:
 env:
   FORMULA: benletchford/tap/systemless
 
+# The homebrew/brew container runs `run:` steps under dash by default, which
+# has no `pipefail`.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # Guards the invariant the release pipeline is built around: whatever bottles
   # the formula advertises have to be downloadable for the version it pins. A
