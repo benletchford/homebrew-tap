@@ -1,8 +1,8 @@
 class Systemless < Formula
   desc "High-level runtime for classic 68k Macintosh applications"
   homepage "https://systemless.org/"
-  url "https://github.com/benletchford/systemless/archive/refs/tags/v0.6.0.tar.gz"
-  sha256 "517f386f3d3d1a909b1ee1bc0c10739ed08c7d17b1ff11330b9a0398078e2197"
+  url "https://github.com/benletchford/systemless/archive/refs/tags/v0.7.0.tar.gz"
+  sha256 "a2ff05d60d2c1cca3bafb7e56eddd6c9680c5a04d0ba3e98727982e47bc68fbf"
   license all_of: ["GPL-3.0-or-later", "OFL-1.1"]
   head "https://github.com/benletchford/systemless.git", branch: "master"
 
