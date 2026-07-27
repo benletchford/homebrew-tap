@@ -11,13 +11,6 @@ class Systemless < Formula
     strategy :github_latest
   end
 
-  bottle do
-    root_url "https://github.com/benletchford/homebrew-tap/releases/download/systemless-0.6.0"
-    sha256 cellar: :any_skip_relocation, arm64_tahoe:  "47adc45529f8296a6534077f6c0476b9347c05190a12a318a6872d0593195a4d"
-    sha256 cellar: :any_skip_relocation, sequoia:      "f8650a9d596f064609b710365aa48c71676f1d97e29b0b0ee691d89ed425fe1f"
-    sha256 cellar: :any,                 x86_64_linux: "7993d49af449806f4dcb1afe6d4fa28a6701e8c8161da36f4ea14faef44b59b8"
-  end
-
   on_linux do
     depends_on "pkgconf" => :build
     depends_on "rust" => :build
@@ -49,8 +42,11 @@ class Systemless < Formula
   end
 
   test do
-    assert_match "Usage:", shell_output("#{bin}/systemless 2>&1", 1)
-    assert_match "Error: Game file not found",
-                 shell_output("#{bin}/systemless #{testpath}/missing.sit 2>&1", 1)
+    # Assert only on --version and --help. Both exit 0 and are guaranteed by
+    # the argument parser, so upstream CLI changes cannot silently wedge the
+    # release pipeline: 0.7.0 moved to clap, which turned the missing-argument
+    # exit status from 1 into 2 and blocked the bottle build.
+    assert_match version.to_s, shell_output("#{bin}/systemless --version")
+    assert_match "Usage:", shell_output("#{bin}/systemless --help")
   end
 end

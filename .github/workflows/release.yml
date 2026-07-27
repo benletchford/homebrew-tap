@@ -1,0 +1,495 @@
+name: Release formulae
+
+# Autonomous end-to-end release of the tap's formulae.
+#
+# The tap is only ever pushed once per release, in a single commit that
+# carries both the version bump and the matching bottle block, and only
+# after the bottles are already downloadable. A run that dies halfway
+# therefore leaves `main` installable rather than pointing at bottles that
+# do not exist, and the next run simply starts over.
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release (defaults to the newest upstream release)
+      force:
+        description: Rebuild and republish even if the tap already looks current
+        type: boolean
+        default: false
+  # Lets the upstream repository trigger a release the moment it tags one,
+  # via `gh api repos/benletchford/homebrew-tap/dispatches -f event_type=upstream-release`.
+  repository_dispatch:
+    types: [upstream-release]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  FORMULA: benletchford/tap/systemless
+  FORMULA_FILE: Formula/systemless.rb
+  # Every bottle tag the `bottle` matrix below produces. Keep the two in sync:
+  # a release is considered incomplete until the formula ships all of these.
+  BOTTLE_TAGS: arm64_tahoe sequoia x86_64_linux
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      root_url: ${{ steps.plan.outputs.root_url }}
+      release: ${{ steps.plan.outputs.release }}
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up git
+        uses: Homebrew/actions/git-user-config@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
+
+      # Always judge the published tap, never the ref that happened to start
+      # this run, so a run dispatched from a topic branch tests that branch's
+      # workflow against the formula users actually install.
+      - name: Sync the tap to main
+        run: |
+          set -euo pipefail
+
+          tap_dir="$(brew --repo "${FORMULA%/*}")"
+          git -C "$tap_dir" fetch --force origin main
+          git -C "$tap_dir" checkout --force -B main origin/main
+
+      - name: Decide whether a release is needed
+        id: plan
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force || false }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          livecheck="$(
+            brew livecheck --formula --json --quiet "$FORMULA"
+          )"
+          current="$(jq -r '.[0].version.current // empty' <<<"$livecheck")"
+          version="${REQUESTED_VERSION:-$(
+            jq -r '.[0].version.latest // empty' <<<"$livecheck"
+          )}"
+
+          if [[ -z "$version" ]]
+          then
+            echo "Could not determine the newest upstream version." >&2
+            exit 1
+          fi
+
+          # `brew pr-upload` derives the release tag from the last path segment
+          # of this URL, so the two cannot drift apart.
+          root_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/systemless-${version}"
+
+          {
+            echo "version=$version"
+            echo "root_url=$root_url"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Tap is at $current, upstream is at $version."
+
+          # A release is complete only when the formula is on the target
+          # version *and* every bottle it advertises actually downloads. The
+          # reachability check is what catches a formula whose bottle block was
+          # left behind by a half-finished release.
+          release=false
+
+          if [[ "$FORCE" == "true" ]]
+          then
+            echo "Forced release requested."
+            release=true
+          elif [[ "$current" != "$version" ]]
+          then
+            echo "Formula needs bumping to $version."
+            release=true
+          else
+            bottles="$(
+              brew info --json=v2 --formula "$FORMULA" \
+                | jq -r '.formulae[0].bottle.stable.files // {} | to_entries[] | "\(.key) \(.value.url)"'
+            )"
+
+            for expected in $BOTTLE_TAGS
+            do
+              url="$(awk -v tag="$expected" '$1 == tag {print $2}' <<<"$bottles")"
+
+              if [[ -z "$url" ]]
+              then
+                echo "Formula is missing a $expected bottle."
+                release=true
+                continue
+              fi
+
+              status="$(curl -sIL -o /dev/null -w '%{http_code}' "$url")"
+              if [[ "$status" != "200" ]]
+              then
+                echo "The $expected bottle is not downloadable (HTTP $status): $url"
+                release=true
+              fi
+            done
+          fi
+
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+          if [[ "$release" != "true" ]]
+          then
+            echo "Tap is current and every bottle is downloadable. Nothing to do."
+          fi
+
+      - name: Prepare the updated formula
+        if: steps.plan.outputs.release == 'true'
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          tap_dir="$(brew --repo "${FORMULA%/*}")"
+          formula_path="$tap_dir/$FORMULA_FILE"
+
+          installed="$(
+            brew info --json=v2 --formula "$FORMULA" \
+              | jq -r '.formulae[0].versions.stable'
+          )"
+
+          if [[ "$installed" != "$VERSION" ]]
+          then
+            brew bump-formula-pr \
+              --write-only \
+              --no-audit \
+              --no-fork \
+              --version="$VERSION" \
+              "$FORMULA"
+          fi
+
+          # Drop any bottle block inherited from an earlier version. The
+          # bottles for this release do not exist yet, and a formula with no
+          # bottle block builds from source instead of 404ing.
+          ruby -e '
+            path = ARGV[0]
+            text = File.read(path)
+            text = text.sub(/^  bottle do\n(?:.*\n)*?  end\n\n?/, "")
+            File.write(path, text)
+          ' "$formula_path"
+
+          echo "::group::Prepared formula"
+          cat "$formula_path"
+          echo "::endgroup::"
+
+          mkdir -p "$RUNNER_TEMP/formula"
+          cp "$formula_path" "$RUNNER_TEMP/formula/"
+
+      - name: Upload the prepared formula
+        if: steps.plan.outputs.release == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: formula
+          path: ${{ runner.temp }}/formula/*.rb
+          if-no-files-found: error
+
+  bottle:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    strategy:
+      # Never cancel a sibling: one platform failing should still surface the
+      # others' logs, and a partial matrix simply means no publish this run.
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15-intel]
+        include:
+          - os: ubuntu-latest
+            container:
+              image: ghcr.io/homebrew/brew:main
+              options: --privileged
+    runs-on: ${{ matrix.os }}
+    container: ${{ fromJSON(toJSON(matrix.container)) }} # zizmor: ignore[unpinned-images]
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up git
+        uses: Homebrew/actions/git-user-config@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
+
+      - name: Cache Homebrew Bundler RubyGems
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.set-up-homebrew.outputs.gems-path }}
+          key: ${{ matrix.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: ${{ matrix.os }}-rubygems-
+
+      - name: Download the prepared formula
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: formula
+          path: prepared-formula
+
+      - name: Stage the prepared formula
+        run: |
+          set -euo pipefail
+
+          tap_dir="$(brew --repo "${FORMULA%/*}")"
+
+          git -C "$tap_dir" fetch --force origin main
+          git -C "$tap_dir" checkout --force -B main origin/main
+
+          cp "prepared-formula/${FORMULA_FILE##*/}" "$tap_dir/$FORMULA_FILE"
+
+          # `brew test-bot` reads the formula through git, so the staged bump
+          # has to be committed locally. It is never pushed from this job.
+          git -C "$tap_dir" add "$FORMULA_FILE"
+          git -C "$tap_dir" commit \
+            --message "systemless ${{ needs.plan.outputs.version }}"
+
+      - run: brew test-bot --only-cleanup-before
+
+      - run: brew test-bot --only-setup
+
+      - name: Build the bottle
+        env:
+          ROOT_URL: ${{ needs.plan.outputs.root_url }}
+        run: |
+          set -euo pipefail
+
+          # Online audit checks are the flakiest part of a bottle build and are
+          # already covered by the tap-syntax job, so they are skipped on the
+          # unattended path.
+          brew test-bot \
+            --only-formulae \
+            --testing-formulae="$FORMULA" \
+            --root-url="$ROOT_URL" \
+            --skip-online-checks
+
+      - name: Upload the bottle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bottle-${{ matrix.os }}
+          path: "*.bottle.*"
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, bottle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up git
+        uses: Homebrew/actions/git-user-config@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
+
+      - name: Download the prepared formula
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: formula
+          path: prepared-formula
+
+      - name: Download the bottles
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: bottle-*
+          merge-multiple: true
+          path: bottles
+
+      - name: Stage the prepared formula
+        run: |
+          set -euo pipefail
+
+          tap_dir="$(brew --repo "${FORMULA%/*}")"
+
+          # Build the release commit on top of the published tap, so a run
+          # dispatched from a topic branch cannot push that branch to main.
+          git -C "$tap_dir" fetch --force origin main
+          git -C "$tap_dir" checkout --force -B main origin/main
+
+          cp "prepared-formula/${FORMULA_FILE##*/}" "$tap_dir/$FORMULA_FILE"
+
+      - name: Merge the bottle block and upload the bottles
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROOT_URL: ${{ needs.plan.outputs.root_url }}
+        run: |
+          set -euo pipefail
+
+          tap_dir="$(brew --repo "${FORMULA%/*}")"
+
+          # `pr-upload` writes the bottle block into the formula and uploads the
+          # bottles to the release named by the root URL. It also refuses to
+          # continue when the bottles and the formula disagree on the version,
+          # which is the mismatch that broke 0.7.0. The formula edit stays local
+          # until the push below, so the bottles are always downloadable before
+          # main refers to them.
+          cd bottles
+          brew pr-upload \
+            --verbose \
+            --no-commit \
+            --root-url="$ROOT_URL"
+
+          # Refuse to publish a formula that does not cover every platform the
+          # matrix builds for, rather than shipping a partial bottle block.
+          for expected in $BOTTLE_TAGS
+          do
+            if ! grep -q "$expected:" "$tap_dir/$FORMULA_FILE"
+            then
+              echo "The merged bottle block is missing $expected." >&2
+              exit 1
+            fi
+          done
+
+          echo "::group::Formula to publish"
+          cat "$tap_dir/$FORMULA_FILE"
+          echo "::endgroup::"
+
+      - name: Verify the bottles are downloadable
+        env:
+          ROOT_URL: ${{ needs.plan.outputs.root_url }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          for expected in $BOTTLE_TAGS
+          do
+            url="$ROOT_URL/systemless-$VERSION.$expected.bottle.tar.gz"
+            status="$(curl -sIL -o /dev/null -w '%{http_code}' "$url")"
+
+            if [[ "$status" != "200" ]]
+            then
+              echo "Published bottle is not downloadable (HTTP $status): $url" >&2
+              exit 1
+            fi
+
+            echo "$expected bottle is downloadable."
+          done
+
+      - name: Commit the release
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          tap_dir="$(brew --repo "${FORMULA%/*}")"
+
+          git -C "$tap_dir" add "$FORMULA_FILE"
+          git -C "$tap_dir" commit \
+            --message "systemless $VERSION" \
+            --message "Bumps the formula and its bottles in a single commit."
+
+      - name: Push the release
+        uses: Homebrew/actions/git-try-push@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: main
+
+  verify:
+    needs: [plan, publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15-intel]
+        include:
+          - os: ubuntu-latest
+            container:
+              image: ghcr.io/homebrew/brew:main
+              options: --privileged
+    runs-on: ${{ matrix.os }}
+    container: ${{ fromJSON(toJSON(matrix.container)) }} # zizmor: ignore[unpinned-images]
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@df4b09108a1de9d6f995fe68f302b3f68bd6d2ef # 2026.07.20.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install what was actually published
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          tap_dir="$(brew --repo "${FORMULA%/*}")"
+          git -C "$tap_dir" fetch --force origin main
+          git -C "$tap_dir" checkout --force -B main origin/main
+
+          brew install --formula --verbose "$FORMULA"
+
+          info="$(brew info --json=v2 --formula "$FORMULA")"
+          installed="$(jq -r '.formulae[0].installed[0].version' <<<"$info")"
+          poured="$(jq -r '.formulae[0].installed[0].poured_from_bottle' <<<"$info")"
+
+          if [[ "$installed" != "$VERSION" ]]
+          then
+            echo "Installed $installed but expected $VERSION." >&2
+            exit 1
+          fi
+
+          # A source build here would mean the bottle was unusable, which is
+          # exactly the failure this pipeline exists to prevent.
+          if [[ "$poured" != "true" ]]
+          then
+            echo "systemless $VERSION was built from source instead of poured." >&2
+            exit 1
+          fi
+
+          brew test "$FORMULA"
+
+          echo "Poured and tested systemless $VERSION."
+
+  alert:
+    needs: [plan, bottle, publish, verify]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Report the failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          title="Automatic release of systemless ${VERSION:-unknown} failed"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          body="The autonomous release pipeline failed: $run_url
+
+          The tap is left on its previous, installable state. The next
+          scheduled run retries automatically, so this needs attention only if
+          it keeps recurring."
+
+          existing="$(
+            gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --search "$title in:title" \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+
+          if [[ -n "$existing" ]]
+          then
+            gh issue comment "$existing" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "$body"
+          else
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --body "$body"
+          fi
