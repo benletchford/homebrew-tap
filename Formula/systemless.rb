@@ -1,8 +1,8 @@
 class Systemless < Formula
   desc "High-level runtime for classic 68k Macintosh applications"
   homepage "https://systemless.org/"
-  url "https://github.com/benletchford/systemless/archive/refs/tags/v0.107.0.tar.gz"
-  sha256 "ca553a5070fa4438367f53cae81988097133b2ded9ae6e0c54918bf7617d3ee8"
+  url "https://github.com/benletchford/systemless/archive/refs/tags/v0.108.0.tar.gz"
+  sha256 "929d62f48ece8b952ac7c2a73585e108b825fe0a5c8651f61f69b395698d7711"
   license all_of: ["GPL-3.0-or-later", "OFL-1.1"]
   head "https://github.com/benletchford/systemless.git", branch: "master"
 
@@ -12,10 +12,10 @@ class Systemless < Formula
   end
 
   bottle do
-    root_url "https://github.com/benletchford/homebrew-tap/releases/download/systemless-0.107.0"
-    sha256 cellar: :any_skip_relocation, arm64_tahoe:  "496cb550e977ac0dc50def4155aee57b3ac5ca79106e6f7136be2a8541044264"
-    sha256 cellar: :any_skip_relocation, sequoia:      "5235b7796ac6b25b7ccadfecd32725a1fc7c97d1fe59a58e3c83a141a5438ed5"
-    sha256 cellar: :any,                 x86_64_linux: "013fb55e2171e8b6487bd097203fc1748603834ad58f2ba9cdc4ac16a819ef98"
+    root_url "https://github.com/benletchford/homebrew-tap/releases/download/systemless-0.108.0"
+    sha256 cellar: :any_skip_relocation, arm64_tahoe:  "4485c52ecd889e9b6ac4cbfc7eb17f34f2e62276afe5c096427e2ad6ed883708"
+    sha256 cellar: :any_skip_relocation, sequoia:      "cc39748667c1f719da7a1026cc60a9791daafe30145775aae4d2017261dc7532"
+    sha256 cellar: :any,                 x86_64_linux: "d896a08186eeee12a560599e84e434dbaf414311bf66a7250d5526d978370b91"
   end
 
   on_linux do
